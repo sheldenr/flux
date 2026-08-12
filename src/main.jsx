@@ -76,6 +76,7 @@ function App() {
   })
   const [showDetails, setShowDetails] = useState(false)
   const [newContact, setNewContact] = useState({ name: '', role: '', company: '' })
+  const [notificationEmail, setNotificationEmail] = useState(() => localStorage.getItem('flux-notification-email') || '')
 
   const visible = useMemo(() => contacts.filter((contact) => {
     const text = `${contact.name} ${contact.role} ${contact.company} ${contact.location}`.toLowerCase()
@@ -86,31 +87,52 @@ function App() {
   const selectedTier = filter === 'All' ? 'Core' : filter
   const selectedCadence = cadenceSettings[selectedTier]
 
-  // Load contacts from Supabase on mount
+  // Load contacts and settings from Supabase on mount
   useEffect(() => {
-    async function fetchContacts() {
+    async function initData() {
       if (!supabase) {
         setIsLoading(false)
         return
       }
       try {
-        const { data, error } = await supabase
-          .from('contacts')
-          .select('*')
-          .order('name', { ascending: true })
-        if (error) throw error
-        if (data) {
-          setContacts(data)
-          localStorage.setItem(CONTACT_STORAGE_KEY, JSON.stringify(data))
+        const [contactsRes, settingsRes] = await Promise.all([
+          supabase.from('contacts').select('*').order('name', { ascending: true }),
+          supabase.from('settings').select('value').eq('key', 'notification_email').maybeSingle()
+        ])
+
+        if (contactsRes.error) throw contactsRes.error
+        if (contactsRes.data) {
+          setContacts(contactsRes.data)
+          localStorage.setItem(CONTACT_STORAGE_KEY, JSON.stringify(contactsRes.data))
+        }
+
+        if (settingsRes.error) throw settingsRes.error
+        if (settingsRes.data?.value) {
+          setNotificationEmail(settingsRes.data.value)
+          localStorage.setItem('flux-notification-email', settingsRes.data.value)
         }
       } catch (err) {
-        console.error('Failed to load contacts from Supabase:', err)
+        console.error('Failed to load data from Supabase:', err)
       } finally {
         setIsLoading(false)
       }
     }
-    fetchContacts()
+    initData()
   }, [])
+
+  async function saveNotificationEmail(email) {
+    setNotificationEmail(email)
+    localStorage.setItem('flux-notification-email', email)
+    if (!supabase) return
+    try {
+      await supabase
+        .from('settings')
+        .upsert({ key: 'notification_email', value: email })
+    } catch (err) {
+      console.error('Failed to sync notification email to Supabase:', err)
+    }
+  }
+
 
   useEffect(() => {
     if (!resizingRail) return undefined
@@ -325,7 +347,7 @@ function App() {
         </div>
       </section>}
 
-      {view === 'Today' ? <TodayView contacts={contacts} setSelected={setSelected} setView={setView} /> : view === 'Planner' ? <Planner contacts={contacts} /> : view === 'Settings' ? <SettingsView contacts={contacts} cadenceSettings={cadenceSettings} updateCadence={updateCadence} importInputRef={importInputRef} onImport={importContacts} importStatus={importStatus} /> : <RelationshipsView contacts={contacts} visible={visible} filter={filter} cadenceSettings={cadenceSettings} setFilter={setFilter} setSelected={setSelected} activeContact={activeContact} setShowAdd={setShowAdd} query={query} logTouchpoint={logTouchpoint} showDetails={showDetails} setShowDetails={setShowDetails} saveContactInfo={saveContactInfo} saveContactDetails={saveContactDetails} selectedIds={selectedIds} setSelectedIds={setSelectedIds} onDeleteSelected={deleteSelected} onEditSelected={() => { if (selectedIds.length === 1) setEditContact(contacts.find((contact) => contact.id === selectedIds[0])) }} />}
+      {view === 'Today' ? <TodayView contacts={contacts} setSelected={setSelected} setView={setView} /> : view === 'Planner' ? <Planner contacts={contacts} /> : view === 'Settings' ? <SettingsView contacts={contacts} cadenceSettings={cadenceSettings} updateCadence={updateCadence} importInputRef={importInputRef} onImport={importContacts} importStatus={importStatus} notificationEmail={notificationEmail} onSaveNotificationEmail={saveNotificationEmail} /> : <RelationshipsView contacts={contacts} visible={visible} filter={filter} cadenceSettings={cadenceSettings} setFilter={setFilter} setSelected={setSelected} activeContact={activeContact} setShowAdd={setShowAdd} query={query} logTouchpoint={logTouchpoint} showDetails={showDetails} setShowDetails={setShowDetails} saveContactInfo={saveContactInfo} saveContactDetails={saveContactDetails} selectedIds={selectedIds} setSelectedIds={setSelectedIds} onDeleteSelected={deleteSelected} onEditSelected={() => { if (selectedIds.length === 1) setEditContact(contacts.find((contact) => contact.id === selectedIds[0])) }} />}
     </main>
 
     {showAdd && <div className="modal-backdrop" onClick={() => setShowAdd(false)}><form className="add-dialog" onSubmit={addContact} onClick={(event) => event.stopPropagation()}><button type="button" className="close-button" onClick={() => setShowAdd(false)}><X size={18} /></button><p className="eyebrow">New contact</p><h2>Add someone to your circle.</h2>{[['name', 'Name'], ['role', 'Role'], ['company', 'Company']].map(([key, label]) => <label key={key}>{label}<input autoFocus={key === 'name'} value={newContact[key]} onChange={(event) => setNewContact({ ...newContact, [key]: event.target.value })} /></label>)}<button className="dark-button" type="submit">Save contact <Check size={16} /></button></form></div>}
@@ -337,9 +359,15 @@ function LoadingScreen() {
   return <div className="loading-screen" role="status" aria-label="Loading Flux"><div className="loading-brand"><span className="loading-brand-icon"><LogoMark size={20} /></span><span>flux</span></div><span className="loading-rule"></span></div>
 }
 
-function SettingsView({ contacts, cadenceSettings, updateCadence, importInputRef, onImport, importStatus }) {
+function SettingsView({ contacts, cadenceSettings, updateCadence, importInputRef, onImport, importStatus, notificationEmail, onSaveNotificationEmail }) {
   const due = contacts.filter((contact) => contact.next === 'Today' || contact.next === 'Tomorrow').length
-  return <section className="settings-view page-view"><div className="page-intro"><p className="eyebrow">Workspace settings</p><h1>Bring your people with you.</h1><p>Import a normal CRM export and Flux will place new connections in the Loose ring so you can sort them over time.</p></div><div className="settings-card"><div><span className="eyebrow">Import contacts</span><h2>Start with a CSV or JSON file.</h2><p>Use columns like name, role, company, location, note, last, or next. Imported contacts are added to Loose.</p></div><input ref={importInputRef} type="file" accept=".csv,.json,application/json,text/csv" onChange={onImport} hidden /><button className="dark-button" onClick={() => importInputRef.current?.click()}>Choose file <Plus size={16} /></button>{importStatus && <p className="import-status" role="status">{importStatus}</p>}</div><div className="settings-card cadence-settings"><div><span className="eyebrow">Connection frequency</span><h2>Choose how often to stay in touch.</h2><p>Set a duration for each ring. Flux will use it everywhere it shows your relationship rhythm.</p></div>{['Core', 'Active', 'Loose'].map((tier) => <label key={tier}><span>{tier}</span><div className="cadence-input"><input type="number" min="1" max="365" value={cadenceSettings[tier].amount} onChange={(event) => updateCadence(tier, { amount: Math.max(1, Number(event.target.value) || 1) })} aria-label={`${tier} cadence amount`} /><select value={cadenceSettings[tier].unit} onChange={(event) => updateCadence(tier, { unit: event.target.value })} aria-label={`${tier} cadence unit`}><option value="days">days</option><option value="weeks">weeks</option><option value="months">months</option></select></div></label>)}</div><div className="settings-snapshot"><p className="eyebrow">Snapshot</p><div className="snapshot-grid"><div><span className="stat-label">Total circle</span><strong>{contacts.length}</strong></div><div><span className="stat-label">Due for touch</span><strong>{due}</strong></div><div><span className="stat-label">Cadence health</span><strong>92%</strong></div></div></div></section>
+  const [emailInput, setEmailInput] = useState(notificationEmail || '')
+
+  useEffect(() => {
+    setEmailInput(notificationEmail || '')
+  }, [notificationEmail])
+
+  return <section className="settings-view page-view"><div className="page-intro"><p className="eyebrow">Workspace settings</p><h1>Bring your people with you.</h1><p>Import a normal CRM export and Flux will place new connections in the Loose ring so you can sort them over time.</p></div><div className="settings-card"><div><span className="eyebrow">Import contacts</span><h2>Start with a CSV or JSON file.</h2><p>Use columns like name, role, company, location, note, last, or next. Imported contacts are added to Loose.</p></div><input ref={importInputRef} type="file" accept=".csv,.json,application/json,text/csv" onChange={onImport} hidden /><button className="dark-button" onClick={() => importInputRef.current?.click()}>Choose file <Plus size={16} /></button>{importStatus && <p className="import-status" role="status">{importStatus}</p>}</div><div className="settings-card"><div><span className="eyebrow">Reminders</span><h2>Notification Email</h2><p>Set the email address where you'd like to receive your daily check-in digests.</p></div><div className="email-setting-input"><input type="email" value={emailInput} onChange={(event) => setEmailInput(event.target.value)} onBlur={() => onSaveNotificationEmail(emailInput)} placeholder="your-email@example.com" style={{ width: '100%', maxWidth: '320px', padding: '8px 12px', background: 'var(--panel-strong)', border: '1px solid var(--quiet)', borderRadius: '4px', color: 'var(--ink)' }} /></div></div><div className="settings-card cadence-settings"><div><span className="eyebrow">Connection frequency</span><h2>Choose how often to stay in touch.</h2><p>Set a duration for each ring. Flux will use it everywhere it shows your relationship rhythm.</p></div>{['Core', 'Active', 'Loose'].map((tier) => <label key={tier}><span>{tier}</span><div className="cadence-input"><input type="number" min="1" max="365" value={cadenceSettings[tier].amount} onChange={(event) => updateCadence(tier, { amount: Math.max(1, Number(event.target.value) || 1) })} aria-label={`${tier} cadence amount`} /><select value={cadenceSettings[tier].unit} onChange={(event) => updateCadence(tier, { unit: event.target.value })} aria-label={`${tier} cadence unit`}><option value="days">days</option><option value="weeks">weeks</option><option value="months">months</option></select></div></label>)}</div><div className="settings-snapshot"><p className="eyebrow">Snapshot</p><div className="snapshot-grid"><div><span className="stat-label">Total circle</span><strong>{contacts.length}</strong></div><div><span className="stat-label">Due for touch</span><strong>{due}</strong></div><div><span className="stat-label">Cadence health</span><strong>92%</strong></div></div></div></section>
 }
 
 function TodayView({ contacts, setSelected, setView }) {
