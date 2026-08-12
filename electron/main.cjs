@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell } = require('electron')
+const { app, BrowserWindow, Menu, shell } = require('electron')
 const path = require('node:path')
 
 const isDevelopment = !app.isPackaged
@@ -13,6 +13,7 @@ function createWindow() {
     show: false,
     backgroundColor: '#161b18',
     title: 'Kindred',
+    icon: path.join(__dirname, '..', 'build', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -36,6 +37,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(null)
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

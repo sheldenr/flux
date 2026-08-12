@@ -13,11 +13,12 @@
     "start": "electron ."
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.112.3",
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
+    "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "lucide-react": "latest"
+    "vite": "latest"
   },
   "devDependencies": {
     "electron": "latest",
@@ -26,10 +27,23 @@
   "build": {
     "appId": "com.flux.crm",
     "productName": "Flux",
-    "files": ["dist/**/*", "electron/**/*", "package.json"],
-    "directories": { "output": "release" },
-    "mac": { "category": "public.app-category.business" },
-    "linux": { "target": "AppImage", "category": "Office" },
-    "win": { "target": "nsis" }
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "mac": {
+      "category": "public.app-category.business"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Office"
+    },
+    "win": {
+      "target": "nsis"
+    }
   }
 }

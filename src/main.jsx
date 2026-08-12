@@ -5,9 +5,15 @@ import {
   CircleHelp, Mail, MoreHorizontal, Pencil, Phone,
   Plus, Search, Settings, Trash2, UserRoundPlus, Users, X,
 } from 'lucide-react'
+import { createClient } from '@supabase/supabase-js'
 import './styles.css'
 
 const CONTACT_STORAGE_KEY = 'flux-contacts-v2'
+
+// Initialize Supabase Client
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || ''
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
+const supabase = (supabaseUrl && supabaseAnonKey) ? createClient(supabaseUrl, supabaseAnonKey) : null
 
 const tiers = ['All', 'Core', 'Active', 'Loose']
 const tierGuidance = {
@@ -22,6 +28,23 @@ function formatCadence(amount, unit) {
   const value = Number(amount) || 1
   const singularUnit = unit.replace(/s$/, '')
   return `Every ${value} ${value === 1 ? singularUnit : unit}`
+}
+
+function LogoMark({ className, size = 18 }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 706 608"
+      width={size}
+      height={Math.round(size * (608 / 706))}
+      className={className}
+      role="img"
+      aria-label="Flux Logo"
+    >
+      <path fill="currentColor" d="M655 105H351C267 105 204 145 173 207C163 227 157 248 151 271L125 390H274L302 287C309 260 326 246 355 246H551C563 246 570 240 577 230L655 105Z" />
+      <path fill="currentColor" d="M274 392H474L399 513C390 528 382 535 365 535H233L274 392Z" />
+    </svg>
+  )
 }
 
 function loadContacts() {
@@ -62,6 +85,32 @@ function App() {
   const activeContact = contacts.find((contact) => contact.id === selected) || visible[0] || contacts[0]
   const selectedTier = filter === 'All' ? 'Core' : filter
   const selectedCadence = cadenceSettings[selectedTier]
+
+  // Load contacts from Supabase on mount
+  useEffect(() => {
+    async function fetchContacts() {
+      if (!supabase) {
+        setIsLoading(false)
+        return
+      }
+      try {
+        const { data, error } = await supabase
+          .from('contacts')
+          .select('*')
+          .order('name', { ascending: true })
+        if (error) throw error
+        if (data) {
+          setContacts(data)
+          localStorage.setItem(CONTACT_STORAGE_KEY, JSON.stringify(data))
+        }
+      } catch (err) {
+        console.error('Failed to load contacts from Supabase:', err)
+      } finally {
+        setIsLoading(false)
+      }
+    }
+    fetchContacts()
+  }, [])
 
   useEffect(() => {
     if (!resizingRail) return undefined
@@ -106,35 +155,55 @@ function App() {
     return () => window.removeEventListener('keydown', handleEscape)
   }, [])
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => setIsLoading(false), 850)
-    return () => window.clearTimeout(timer)
-  }, [])
+  async function persist(nextContacts, action, payload) {
+    setContacts(nextContacts)
+    localStorage.setItem(CONTACT_STORAGE_KEY, JSON.stringify(nextContacts))
 
-  function persist(next) {
-    setContacts(next)
-    localStorage.setItem(CONTACT_STORAGE_KEY, JSON.stringify(next))
+    if (!supabase) return
+
+    try {
+      if (action === 'add') {
+        await supabase.from('contacts').insert([payload])
+      } else if (action === 'update') {
+        await supabase.from('contacts').update(payload.changes).eq('id', payload.id)
+      } else if (action === 'delete') {
+        await supabase.from('contacts').delete().in('id', payload.ids)
+      } else if (action === 'overwrite') {
+        await supabase.from('contacts').upsert(payload)
+      }
+    } catch (err) {
+      console.error('Failed to sync changes with Supabase:', err)
+    }
   }
 
   function addContact(event) {
     event.preventDefault()
     if (!newContact.name.trim()) return
     const initials = newContact.name.split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase()
-    const contact = { id: Date.now(), name: newContact.name.trim(), role: newContact.role.trim(), company: newContact.company.trim(), location: '', tier: 'Active', initials, color: 'blue', last: 'Not yet', next: 'Today', note: '', activity: 'Contact added to your circle' }
-    persist([...contacts, contact]); setSelected(contact.id); setShowAdd(false); setNewContact({ name: '', role: '', company: '' })
+    // Generate a unique integer ID for client-first rendering
+    const newId = Date.now()
+    const contact = { id: newId, name: newContact.name.trim(), role: newContact.role.trim(), company: newContact.company.trim(), location: '', tier: 'Active', initials, color: 'blue', last: 'Not yet', next: 'Today', note: '', activity: 'Contact added to your circle' }
+    persist([...contacts, contact], 'add', contact)
+    setSelected(newId)
+    setShowAdd(false)
+    setNewContact({ name: '', role: '', company: '' })
   }
 
   function logTouchpoint() {
-    const next = contacts.map((contact) => contact.id === activeContact.id ? { ...contact, last: 'Just now', next: 'In 3 weeks', activity: 'You logged a touchpoint' } : contact)
-    persist(next)
+    if (!activeContact) return
+    const changes = { last: 'Just now', next: 'In 3 weeks', activity: 'You logged a touchpoint' }
+    const next = contacts.map((contact) => contact.id === activeContact.id ? { ...contact, ...changes } : contact)
+    persist(next, 'update', { id: activeContact.id, changes })
   }
 
   function saveContactInfo(id, note) {
-    persist(contacts.map((contact) => contact.id === id ? { ...contact, note, activity: 'You updated their context' } : contact))
+    const changes = { note, activity: 'You updated their context' }
+    persist(contacts.map((contact) => contact.id === id ? { ...contact, ...changes } : contact), 'update', { id, changes })
   }
 
   function saveContactDetails(id, changes) {
-    persist(contacts.map((contact) => contact.id === id ? { ...contact, ...changes, activity: 'You updated their contact details' } : contact))
+    const fullChanges = { ...changes, activity: 'You updated their contact details' }
+    persist(contacts.map((contact) => contact.id === id ? { ...contact, ...fullChanges } : contact), 'update', { id, changes: fullChanges })
   }
 
   function updateCadence(tier, changes) {
@@ -150,7 +219,7 @@ function App() {
 
   function deleteSelected() {
     if (!selectedIds.length) return
-    persist(contacts.filter((contact) => !selectedIds.includes(contact.id)))
+    persist(contacts.filter((contact) => !selectedIds.includes(contact.id)), 'delete', { ids: selectedIds })
     setSelectedIds([])
     setShowDetails(false)
   }
@@ -158,9 +227,11 @@ function App() {
   function saveEditedContact(event) {
     event.preventDefault()
     if (!editContact?.name.trim()) return
-    persist(contacts.map((contact) => contact.id === editContact.id ? { ...contact, name: editContact.name.trim(), role: editContact.role || 'New connection', company: editContact.company || 'Independent', tier: editContact.tier || contact.tier, activity: 'You updated their contact details' } : contact))
+    const changes = { name: editContact.name.trim(), role: editContact.role || 'New connection', company: editContact.company || 'Independent', tier: editContact.tier || editContact.tier, activity: 'You updated their contact details' }
+    persist(contacts.map((contact) => contact.id === editContact.id ? { ...contact, ...changes } : contact), 'update', { id: editContact.id, changes })
     setEditContact(null)
   }
+
 
   function importContacts(event) {
     const file = event.target.files?.[0]
@@ -184,7 +255,7 @@ function App() {
           const initials = name.split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase()
           return { id: Date.now() + index, name, role: row.role || row.title || 'New connection', company: row.company || row.organization || 'Independent', location: row.location || 'Imported contact', tier: 'Loose', initials, color: 'blue', last: row.last || 'Not yet', next: row.next || 'This week', note: row.note || 'Imported from your CRM.', activity: 'Imported into Loose' }
         })
-        persist([...contacts, ...imported])
+        persist([...contacts, ...imported], 'overwrite', imported)
         setImportStatus(`${imported.length} contact${imported.length === 1 ? '' : 's'} imported into Loose.`)
       } catch { setImportStatus('Could not read that file. Use a CSV or JSON contact list.') }
       event.target.value = ''
@@ -196,7 +267,7 @@ function App() {
 
   return <div ref={workspaceRef} className="workspace">
     <aside className={railCollapsed ? 'rail rail-collapsed' : 'rail'} style={{ '--rail-width': `${railWidth}px` }}>
-      <div className="brand"><span className="brand-mark">f</span><span>flux</span></div>
+      <div className="brand"><span className="brand-mark"><LogoMark size={20} /></span><span>flux</span></div>
       <div className="rail-section rail-primary-nav">
         <p className="rail-label">Flux</p>
         <NavItem icon={Users} label="People" active={view === 'Relationships'} onClick={() => setView('Relationships')} />
@@ -263,7 +334,7 @@ function App() {
 }
 
 function LoadingScreen() {
-  return <div className="loading-screen" role="status" aria-label="Loading Flux"><div className="loading-brand"><span className="loading-brand-icon">f</span><span>flux</span></div><span className="loading-rule"></span></div>
+  return <div className="loading-screen" role="status" aria-label="Loading Flux"><div className="loading-brand"><span className="loading-brand-icon"><LogoMark size={20} /></span><span>flux</span></div><span className="loading-rule"></span></div>
 }
 
 function SettingsView({ contacts, cadenceSettings, updateCadence, importInputRef, onImport, importStatus }) {
